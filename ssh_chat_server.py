@@ -45,6 +45,17 @@ def check_ip_reply(client_ip: str) -> str | None:
     return None
 
 
+def username_taken(username: str) -> bool:
+    """同名ユーザーが既にログに存在するか確認する。"""
+    if not os.path.exists(LOG_FILE) or os.path.getsize(LOG_FILE) == 0:
+        return False
+    with open(LOG_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            if f"[USER: {username}]" in line:
+                return True
+    return False
+
+
 def resolve_ip(websocket) -> str:
     """WebSocketオブジェクトからクライアントIPを安全に取得する。"""
     # プロキシ経由の場合は X-Forwarded-For を優先
@@ -82,7 +93,7 @@ async def run_admin_session(websocket, ip_address: str) -> None:
         f"Verified Administrator IP: {ip_address}\n"
         "Authentication successful. Switching to administrative mode...\n"
         "============================================================\n"
-        " 管理者コントロールパネル - ゲストメッセージ・IPログ一覧\n"
+        " 管理者コントロールパネル - ゲストメッセージ・ユーザー名・IPログ一覧\n"
         "============================================================\n"
     )
     await websocket.send(banner)
@@ -99,7 +110,7 @@ async def run_admin_session(websocket, ip_address: str) -> None:
     # 複数IPへの返信ループ
     while True:
         await websocket.send(
-            "[必須] 返信したい相手の『IPアドレス』を入力 / 終了するには 'exit' と入力:\n> "
+            "[必須] 返信したい相手の『IPアドレス』を入力 (ログの [IP: ...] を参照) / 終了するには 'exit' と入力:\n> "
         )
         target_ip = (await websocket.recv()).strip()
 
@@ -134,21 +145,48 @@ async def run_admin_session(websocket, ip_address: str) -> None:
 
 async def run_guest_session(websocket, ip_address: str) -> None:
     """ゲスト向けのインタラクティブセッション。"""
-    banner = (
+    # --- ユーザー名入力フェーズ ---
+    await websocket.send(
         "Connecting to secure-message-service... Done.\n"
         "Initializing repository setup... OK.\n"
         "------------------------------------------------------------\n"
         " サービス名: 匿名メッセージ共有サブシステム (v2.0.0-release)\n"
         f" 検出されたあなたのIP: {ip_address}\n"
         "------------------------------------------------------------\n"
+        " ユーザー名を入力してください (1〜20文字, 英数字・記号可):\n> "
+    )
+
+    username = ""
+    for _ in range(3):  # 最大3回試行
+        raw = (await websocket.recv()).strip()
+        if not raw:
+            await websocket.send("エラー: ユーザー名を入力してください。もう一度:\n> ")
+            continue
+        if len(raw) > 20:
+            await websocket.send("エラー: ユーザー名は20文字以内にしてください。もう一度:\n> ")
+            continue
+        if username_taken(raw):
+            await websocket.send(f"エラー: '{raw}' はすでに使用されています。別の名前を入力してください:\n> ")
+            continue
+        username = raw
+        break
+
+    if not username:
+        await websocket.send("\nエラー: ユーザー名の設定に失敗しました。接続を終了します。\n")
+        return
+
+    logger.info("Guest identified as '%s' (%s)", username, ip_address)
+
+    # --- メインメニュー ---
+    await websocket.send(
+        f"\nようこそ、{username} さん!\n"
+        "------------------------------------------------------------\n"
         " メニューを選択してください:\n"
         "   1) メッセージを送信する (Send message)\n"
         "   2) 自分への返信を確認する (Check reply)\n\n"
         "選択してください (1-2) > "
     )
-    await websocket.send(banner)
 
-    # メインメニュー
     choice = (await websocket.recv()).strip()
 
     if choice == "1":
@@ -162,12 +200,12 @@ async def run_guest_session(websocket, ip_address: str) -> None:
         msg_id = get_next_msg_id()
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"[ID: #{msg_id}] [DATE: {now}] [IP: {ip_address}] DATA: {body}\n")
+            f.write(f"[ID: #{msg_id}] [DATE: {now}] [USER: {username}] [IP: {ip_address}] DATA: {body}\n")
 
-        logger.info("New message #%d from %s", msg_id, ip_address)
+        logger.info("New message #%d from '%s' (%s)", msg_id, username, ip_address)
         await websocket.send(
             f"\n処理が正常に完了しました (HTTP 201 Created).\n"
-            f"あなたのメッセージは受付番号 【 #{msg_id} 】 としてIPに紐付けられました。\n"
+            f"あなたのメッセージは受付番号 【 #{msg_id} 】 として {username} に紐付けられました。\n"
             f"Session terminated. Closing connection...\n"
         )
 
@@ -176,14 +214,14 @@ async def run_guest_session(websocket, ip_address: str) -> None:
         if reply:
             await websocket.send(
                 "\n============================================================\n"
-                " [NOTICE] あなたのIPに対する管理者からの応答データ\n"
+                f" [NOTICE] {username} さんへの管理者からの応答データ\n"
                 "============================================================\n"
                 f"{reply}\n"
                 "============================================================\n"
             )
         else:
             await websocket.send(
-                "\nステータス: 処理待ち (あなたへの返信はまだ登録されていません)。\n"
+                f"\nステータス: 処理待ち ({username} さんへの返信はまだ登録されていません)。\n"
             )
         await websocket.send("Session terminated. Closing connection...\n")
 
