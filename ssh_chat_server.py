@@ -112,11 +112,14 @@ def get_all_usernames() -> list[str]:
 def resolve_ip(websocket) -> str:
     """WebSocketオブジェクトからクライアントIPを安全に取得する。"""
     try:
-        forwarded = websocket.request.headers.get("X-Forwarded-For", "")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-    except AttributeError:
+        # websockets >= 11.0 API に対応
+        if hasattr(websocket, 'request') and websocket.request is not None:
+            forwarded = websocket.request.headers.get("X-Forwarded-For", "")
+            if forwarded:
+                return forwarded.split(",")[0].strip()
+    except Exception:
         pass
+        
     addr = websocket.remote_address
     if isinstance(addr, tuple):
         return addr[0]
@@ -340,13 +343,12 @@ async def handle_ws(websocket) -> None:
 #  HTTPリクエスト処理 (WebSocket以外)
 # ------------------------------------------------------------------ #
 
-# ------------------------------------------------------------------ #
-#  HTTPリクエスト処理 (WebSocket以外)
-# ------------------------------------------------------------------ #
-
-async def http_handler(path, request_headers):
-    """WebSocket以外は無視（何も返さない）。"""
-    # None を返すだけで、接続は閉じられる
+async def http_handler(connection, request):
+    """
+    WebSocket接続前のHTTPリクエスト処理フック。
+    websockets >= 11.0 のAPI仕様 (connection, request) に対応。
+    None を返すと通常のWebSocketハンドシェイクが継続される。
+    """
     return None
 
 
@@ -366,14 +368,16 @@ async def main() -> None:
         loop.add_signal_handler(sig, _handle_signal)
 
     logger.info("WebSocket サーバー起動 — ポート %d  |  ADMIN_IP=%s", PORT, ADMIN_IP)
+    
+    # サーバーの起動
     async with serve(
         handle_ws,
         "0.0.0.0",
         PORT,
         process_request=http_handler,
-        ping_interval=30,     # 30秒ごとにpingを送り切断を検出
-        ping_timeout=10,      # 10秒以内にpongがなければ切断
-        close_timeout=5,      # シャットダウン時のclose待機上限
+        ping_interval=30,      # 30秒ごとにpingを送り切断を検出
+        ping_timeout=10,       # 10秒以内にpongがなければ切断
+        close_timeout=5,       # シャットダウン時のclose待機上限
     ):
         await stop_event.wait()
 
