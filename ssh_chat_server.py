@@ -13,11 +13,11 @@ import logging
 import os
 import signal
 import datetime
+import http
 from typing import Optional
 
 from websockets.server import serve
 from websockets.exceptions import ConnectionClosedOK, ConnectionClosedError
-from websockets.http11 import Response
 
 # ------------------------------------------------------------------ #
 #  設定 / ロギング
@@ -113,11 +113,29 @@ def get_all_usernames() -> list[str]:
 def resolve_ip(websocket) -> str:
     """WebSocketオブジェクトからクライアントIPを安全に取得する。"""
     try:
-        # websockets >= 11.0 API に対応
-        if hasattr(websocket, 'request') and websocket.request is not None:
-            forwarded = websocket.request.headers.get("X-Forwarded-For", "")
+        headers = None
+        # レガシーAPI (websockets <= 10.x, または websockets.legacy)
+        if hasattr(websocket, 'request_headers'):
+            headers = websocket.request_headers
+        # 新しいAPI (websockets >= 11.0 asyncio)
+        elif hasattr(websocket, 'request') and websocket.request is not None:
+            headers = websocket.request.headers
+            
+        if headers is not None:
+            # Cloudflare等のCDN経由
+            cf_ip = headers.get("CF-Connecting-IP", "")
+            if cf_ip:
+                return cf_ip.strip()
+                
+            # 一般的なロードバランサー/プロキシ (複数ある場合は先頭がオリジナルIP)
+            forwarded = headers.get("X-Forwarded-For", "")
             if forwarded:
                 return forwarded.split(",")[0].strip()
+                
+            # Nginx等のリバースプロキシ
+            real_ip = headers.get("X-Real-IP", "")
+            if real_ip:
+                return real_ip.strip()
     except Exception:
         pass
         
@@ -344,15 +362,19 @@ async def handle_ws(websocket) -> None:
 #  HTTPリクエスト処理 (WebSocket以外)
 # ------------------------------------------------------------------ #
 
-async def http_handler(connection, request):
+async def http_handler(path, request_headers):
     """
     WebSocket接続前のHTTPリクエスト処理フック。
-    websockets >= 11.0 のAPI仕様 (connection, request) に対応。
+    レガシーAPI (path, request_headers) に対応。
     None を返すと通常のWebSocketハンドシェイクが継続される。
     """
     # ロードバランサー等の HTTP ヘルスチェック応答用 (200 OK を返す)
-    if request.headers.get("Upgrade", "").lower() != "websocket":
-        return Response(200, "OK", [("Content-Type", "text/plain")], b"Health Check OK\n")
+    if request_headers.get("Upgrade", "").lower() != "websocket":
+        return (
+            http.HTTPStatus.OK,
+            [("Content-Type", "text/plain")],
+            b"Health Check OK\n"
+        )
         
     return None
 
