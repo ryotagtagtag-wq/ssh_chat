@@ -96,6 +96,14 @@ def check_username_reply(username: str) -> Optional[str]:
 #  Session Handlers
 # ------------------------------------------------------------------ #
 
+def get_client_ip(websocket) -> str:
+    # ヘッダーからプロキシ経由のIPを取得
+    headers = getattr(websocket, 'request_headers', {})
+    for header in ["CF-Connecting-IP", "X-Forwarded-For", "X-Real-IP"]:
+        if val := headers.get(header):
+            return val.split(",")[0].strip()
+    return websocket.remote_address[0]
+
 async def run_guest_session(websocket, ip: str) -> None:
     # 言語選択
     await websocket.send(MESSAGES["en"]["select_lang"])
@@ -123,9 +131,9 @@ async def run_guest_session(websocket, ip: str) -> None:
         await websocket.send(f"\n{reply if reply else msgs['no_replies']}\n")
 
 async def handle_ws(websocket) -> None:
-    ip = websocket.remote_address[0]
+    ip = get_client_ip(websocket)
     if ip == ADMIN_IP:
-        await websocket.send("Admin Access Granted.\n") # 管理画面は簡略化のため英語のまま
+        await websocket.send("Admin Access Granted.\n")
     else:
         await run_guest_session(websocket, ip)
 
