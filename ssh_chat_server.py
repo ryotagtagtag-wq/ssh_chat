@@ -36,7 +36,7 @@ async def handle_ws(websocket):
     if hasattr(websocket, 'request_headers'):
         forwarded = websocket.request_headers.get("X-Forwarded-For", "")
         if forwarded:
-            ip_address = forwarded.split(",").strip()
+            ip_address = forwarded.split(",")[0].strip()
             
     if not ip_address or ip_address == "Unknown":
         ip_address = websocket.remote_address
@@ -144,7 +144,6 @@ async def handle_ws(websocket):
             del client_states[client_id]
 
 async def http_and_ws_handler(path, request_headers):
-    # 🌐 /ws 以外のリクエスト（通常のブラウザアクセス等）があったら、真っ白な空白のHTMLを返す
     if path != "/ws":
         blank_html = "<!DOCTYPE html><html><head><meta charset='utf-8'></head><body></body></html>"
         return (
@@ -152,12 +151,10 @@ async def http_and_ws_handler(path, request_headers):
             [("Content-Type", "text/html; charset=utf-8")],
             blank_html.encode("utf-8"),
         )
-    # /ws の場合はWebSocket接続としてそのまま通過させて処理する
     return None
 
 async def main():
     port = int(os.environ.get("PORT", 10000))
-    # process_request を仕込むことで、WebsocketとWebのルーティングを厳密に分離します
     async with serve(handle_ws, "0.0.0.0", port, process_request=http_and_ws_handler):
         await asyncio.Future()
 
